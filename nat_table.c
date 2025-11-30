@@ -1,26 +1,16 @@
 #include <stdint.h>
 #include <stdlib.h>
+#include "five_tuple.h"
 
 
 #define NAT_TABLE_SIZE 1024
-#define GATEWAY_IP_ADDR 0xFFFFFFFF // 255.255.255.255
-
-typedef struct {
-    uint32_t ipAddr;
-    uint16_t port;
-} Socket;
-
-typedef struct {
-    Socket src;
-    Socket dst;
-    uint8_t protocol;
-} NatTableKey;
 
 typedef struct NatTableEntry {
-    NatTableKey fwd_key;
-    NatTableKey rev_key;
+    FiveTuple fwd_key;
+    FiveTuple rev_key;
 
-    Socket gateway;
+    uint32_t gateway_ip;
+    uint16_t gateway_port;
 
     struct NatTableEntry* next_fwd_entry;
     struct NatTableEntry* next_rev_entry;
@@ -36,147 +26,95 @@ NatTable* create_NAT_table() {
     if (!obj) return NULL;
     return obj;
 }
-
-Socket* create_socket(const uint32_t ipAddr, const uint16_t port) {
-    Socket* obj = malloc(sizeof(Socket));
-    if (!obj) return NULL;
-    obj->ipAddr = ipAddr;
-    obj->port = port;
-    return obj;
-}
-
-static uint32_t NatTableKey_hash(const NatTableKey* key) {
+static uint32_t fiveTuple_hash(const FiveTuple* key) {
     uint32_t h = 2166136261u; // starting hash. Need to add 'u' here because the literal might be interperetted as something else. 
     
-    h ^= key->src.ipAddr;   h *= 16777619;
-    h ^= key->dst.ipAddr;   h *= 16777619;
-    h ^= key->src.port;     h *= 16777619;
-    h ^= key->dst.port;     h *= 16777619;
+    h ^= key->src_ip;   h *= 16777619;
+    h ^= key->dst_ip;   h *= 16777619;
+    h ^= key->src_port;     h *= 16777619;
+    h ^= key->dst_port;     h *= 16777619;
     h ^= key->protocol;     h *= 16777619;
 
     return h % NAT_TABLE_SIZE;
 }
 
-Socket generate_gateway_socket() {
-    // this function will mimic generating a port from the dynamic range of ports (49152-65535)
-    // but hard coded for now
-    Socket gateway_socket = {
-        .ipAddr = GATEWAY_IP_ADDR,
-        .port = 49152
-    };
-    return gateway_socket;
-}
-
-int NatTable_insert(NatTable* nat_table, const Socket* internal, const Socket* external, const uint8_t protocol) {
+NatTableEntry* NatTable_insert(NatTable* nat_table, FiveTuple* fwd_key, const uint32_t gateway_ip, const uint16_t gateway_port) {
     NatTableEntry* obj = malloc(sizeof(NatTableEntry));
-    if (!obj) return 1;
+    if (!obj) return NULL;
 
-    // create the forward key:
-    NatTableKey fwd_key = {
-        .src = *internal,
-        .dst = *external,
-        .protocol = protocol
+    FiveTuple rev_key = {
+        .src_ip = fwd_key->dst_ip,
+        .src_port = fwd_key->dst_port,
+        .dst_ip = gateway_ip,
+        .dst_port = gateway_port,
+        .protocol = fwd_key->protocol
     };
 
-    // here we need to generate a gateway
-    Socket new_gateway_socket = generate_gateway_socket();
-
-    // create the reverse key:
-    NatTableKey rev_key = {
-        .src = *external,
-        .dst = new_gateway_socket,
-        .protocol = protocol
-    };
-
-    obj->fwd_key = fwd_key;
+    obj->fwd_key = *fwd_key;
     obj->rev_key = rev_key;
-    obj->gateway = new_gateway_socket;
+    obj->gateway_ip = gateway_ip;
+    obj->gateway_port = gateway_port;
 
     // hash the fwd_key
-    uint32_t fwd_key_hash = NatTableKey_hash(&fwd_key);
+    uint32_t fwd_key_hash = fiveTuple_hash(&fwd_key);
     obj->next_fwd_entry = nat_table->fwd_table[fwd_key_hash];
     nat_table->fwd_table[fwd_key_hash] = obj;
 
     // hash the rev_key
-    uint32_t rev_key_hash = NatTableKey_hash(&rev_key);
+    uint32_t rev_key_hash = fiveTuple_hash(&rev_key);
     obj->next_rev_entry = nat_table->rev_table[rev_key_hash];
     nat_table->rev_table[rev_key_hash] = obj;
 
-    return 1;
+    return obj;
 }
 
-NatTableEntry* NatTable_fwd_lookup(const NatTable* nat_table, const NatTableKey* fwd_key) {
+NatTableEntry* NatTable_fwd_lookup(const NatTable* nat_table, const FiveTuple* fwd_key) {
     // hash the key:
-    uint32_t fwd_key_hash = NatTableKey_hash(fwd_key);
+    uint32_t fwd_key_hash = fiveTuple_hash(fwd_key);
     NatTableEntry* entry = nat_table->fwd_table[fwd_key_hash];
     // collision chaining handling
     while (entry) {
-        NatTableEntry entry_obj = *entry; // just so we don't have to keep dereferencing since it is costly
-        NatTableKey fwd_key_obj = *fwd_key; // just so we don't have to keep dereferencing since it is costly
         // need to compare the entry's forward key to the fwd key in the input
-        if (
-            memcmp(&entry_obj.fwd_key.src, &fwd_key_obj.src, sizeof(Socket)) == 0 &&
-            memcmp(&entry_obj.fwd_key.dst, &fwd_key_obj.dst, sizeof(Socket)) == 0 &&
-            entry_obj.fwd_key.protocol == fwd_key_obj.protocol
-        ) return entry;
+        if (memcmp(&entry->fwd_key, &fwd_key, sizeof(FiveTuple)) == 0) return entry;
         entry = entry->next_fwd_entry;
     }
     return NULL;
 }
 
-NatTableEntry* NatTable_rev_lookup(const NatTable* nat_table, const NatTableKey* rev_key) {
+NatTableEntry* NatTable_rev_lookup(const NatTable* nat_table, const FiveTuple* rev_key) {
     // has the rev_key:
-    uint32_t rev_key_hash = NatTableKey_hash(rev_key);
+    uint32_t rev_key_hash = fiveTuple_hash(rev_key);
     NatTableEntry* entry = nat_table->rev_table[rev_key_hash];
     while (entry) {
-        NatTableEntry entry_obj = *entry;
-        NatTableKey rev_key_obj = *rev_key;
-        if (
-            memcmp(&entry_obj.rev_key.src, &rev_key_obj.src, sizeof(Socket)) == 0 &&
-            memcmp(&entry_obj.rev_key.dst, &rev_key_obj.dst, sizeof(Socket)) == 0 &&
-            entry_obj.rev_key.protocol == rev_key_obj.protocol
-        ) return entry;
+        if (memcmp(&entry->rev_key, &rev_key, sizeof(FiveTuple)) == 0) return entry;
         entry = entry->next_rev_entry;
     }
     return NULL;
 }
 
-int natTable_remove(NatTable* nat_table, const Socket* internal, const Socket* external, const uint8_t protocol) {
-    // remember to remove from both tables!
-
-    // generate the forward key:
-    NatTableKey fwd_key = {
-        .src = *internal,
-        .dst = *external,
-        .protocol = protocol
-    };
+int NatTable_remove(NatTable* nat_table, const FiveTuple* fwd_key) {
     // hash this
-    uint32_t fwd_key_hash = NatTableKey_hash(&fwd_key);
+    uint32_t fwd_key_hash = fiveTuple_hash(&fwd_key);
 
     NatTableEntry* fwd_to_free = NULL;
-    Socket gateway = {0}; // dummy 0 initialization until we get find the gateway socket
+    uint32_t gateway_ip = NULL; // NULL initialization until we get find the gateway
+    uint16_t gateway_port = NULL;
 
     // find the entry object so we can get the gateway, and thus we can then remove from the reverse table
     NatTableEntry* entry = nat_table->fwd_table[fwd_key_hash];
     // need to compare the first entry
-    if (
-        memcmp(&entry->fwd_key.src, internal, sizeof(Socket)) == 0 &&
-        memcmp(&entry->fwd_key.dst, external, sizeof(Socket)) == 0 &&
-        entry->fwd_key.protocol == protocol
-    ) {
+    if (memcmp(&entry->fwd_key, fwd_key, sizeof(FiveTuple)) == 0) {
         fwd_to_free = entry;
-        gateway = fwd_to_free->gateway; // make copy, not pointer
+        gateway_ip = fwd_to_free->gateway_ip; // make copy, not pointer
+        gateway_port = fwd_to_free->gateway_port;
         nat_table->fwd_table[fwd_key_hash] = entry->next_fwd_entry;
     } else {
         while (entry) {
             if (entry->next_fwd_entry) {
-                if (
-                    memcmp(&(entry->next_fwd_entry->fwd_key.src), internal, sizeof(Socket)) == 0 &&
-                    memcmp(&(entry->next_fwd_entry->fwd_key.dst), external, sizeof(Socket)) == 0 &&
-                    entry->next_fwd_entry->fwd_key.protocol == protocol
-                ) {
+                if (memcmp(&(entry->next_fwd_entry->fwd_key), fwd_key, sizeof(FiveTuple)) == 0) {
                     fwd_to_free = entry->next_fwd_entry;
-                    gateway = fwd_to_free->gateway; // make copy, not pointer
+                    gateway_ip = fwd_to_free->gateway_ip; // make copy, not pointer
+                    gateway_port = fwd_to_free->gateway_port;
                     entry->next_fwd_entry = fwd_to_free->next_fwd_entry;
                     break;
                 }
@@ -189,33 +127,27 @@ int natTable_remove(NatTable* nat_table, const Socket* internal, const Socket* e
     NatTableEntry* rev_to_free = NULL;
 
     // now we can create the reverse key
-    NatTableKey rev_key = {
-        .src = *external,
-        .dst = gateway,
-        .protocol = protocol
+    FiveTuple rev_key = {
+        .src_ip = fwd_key->dst_ip,
+        .src_port = fwd_key->dst_port,
+        .dst_ip = gateway_ip,
+        .dst_port = gateway_port,
+        .protocol = fwd_key->protocol
     };
 
     // hash the reverse key
-    uint32_t rev_key_hash = NatTableKey_hash(&rev_key);
+    uint32_t rev_key_hash = fiveTuple_hash(&rev_key);
 
     // now unlink the reverse
     entry = nat_table->rev_table[rev_key_hash];
 
-    if (
-        memcmp(&entry->rev_key.src, external, sizeof(Socket)) == 0 &&
-        memcmp(&entry->rev_key.dst, &gateway, sizeof(Socket)) == 0 &&
-        entry->rev_key.protocol == protocol
-    ) {
+    if (memcmp(&entry->rev_key, &rev_key, sizeof(FiveTuple)) == 0) {
         rev_to_free = entry;
         nat_table->rev_table[rev_key_hash] = entry->next_rev_entry;
     } else {
         while (entry) {
             if (entry->next_rev_entry) { // this outer if conditional is just ot make sure we don't get into a seg fault on the inside. 
-                if (
-                    memcmp(&entry->next_rev_entry->rev_key.src, external, sizeof(Socket)) == 0 &&
-                    memcmp(&entry->next_rev_entry->rev_key.dst, &gateway, sizeof(Socket)) == 0 &&
-                    entry->rev_key.protocol == protocol
-                ) {
+                if (memcmp(&entry->next_rev_entry->rev_key, &rev_key, sizeof(FiveTuple)) == 0) {
                     rev_to_free = entry->next_rev_entry;
                     entry->next_rev_entry = rev_to_free->next_rev_entry;
                     break;
