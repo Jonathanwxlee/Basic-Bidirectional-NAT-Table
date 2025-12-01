@@ -3,7 +3,7 @@
 
 #include "five_tuple.h"
 
-typedef struct Socket Socket;
+#define NAT_TABLE_SIZE 1024
 
 // how does the NatTable from nattable.c get linked here?
 typedef struct NatTable NatTable;
@@ -30,6 +30,6 @@ NatTableEntry* NatTable_insert(NatTable* nat_table, FiveTuple* fwd_key, const ui
 This function is to remove an entry from the nat_table. 
 Return 0 on success, 1 on error
 */
-int NatTable_remove(NatTable* nat_table, FiveTuple* fwd_key);
+int NatTable_remove(NatTable* nat_table, const FiveTuple* fwd_key);
 
 #endif

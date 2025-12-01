@@ -27,14 +27,14 @@ NatTableEntry* create_connection(NatTable* nat_table, const uint32_t src_ip, con
     // check if the connection already exists 
     NatTableEntry* entry = NatTable_fwd_lookup(nat_table, &fwdKey);
     if (entry) {
-        printf("connection already exists!");
+        printf("connection already exists!\n");
         return entry; // this indicates that an entry already exists. Return the entry
     }
     // otherwise, need to create a new mapping
 
     const uint16_t gateway_port = generate_gateway_port();
 
-    NatTableEntry* entry = NatTable_insert(nat_table, &fwdKey, GATEWAY_IP_ADDRESS, gateway_port);
+    entry = NatTable_insert(nat_table, &fwdKey, GATEWAY_IP_ADDRESS, gateway_port);
     return (entry); // if entry failed, returns NULL. otherwise, return the actual NatTableEntry pointer. 
 }
 
@@ -75,7 +75,7 @@ int main(void) {
 
     NatTableEntry* entry = create_connection(nat_table, private_ip, private_port, public_ip, public_port, 70);
     if (!entry) return 1;
-    printf("Entry created");
+    printf("Entry created\n");
 
     // try to add the same entry: 
     NatTableEntry* repeat_entry = create_connection(nat_table, private_ip, private_port, public_ip, public_port, 70);
